@@ -1,0 +1,229 @@
+library(dplyr)
+library("JM")
+library("JMbayes")
+library("lattice")
+library("mice")
+library("plyr")
+library ("nlme")
+library("longitudinal")
+library("Amelia")
+library("lme4")
+#library("car")
+#library("VIM")
+#library("VIMGUI")
+#library("Zelig")
+
+genedata<-read.csv("jointGD.csv",header=T)
+dim(genedata)
+genedata<-genedata[-508,]
+class(genedata)
+sum(is.na(genedata))
+gene_id<-genedata[,1]
+data<-genedata[,-1]
+data[data=="null"]<-NA
+
+### Changing factor data to Numeric Value and replacing NA by 0 ####
+for(i in 1:length(data))
+{
+  data[,i]=as.numeric(as.character(data[,i]))
+}
+
+data1=t(data)
+colnames(data1)<-as.character(gene_id) ## there is a better way to transpose dataset 
+## using 
+
+### Data Merging #####
+
+patient_data=read.csv("repeated_measurement.csv",header=T)
+rownames(data1)<-NULL
+complete_data=cbind(patient_data,data1)
+
+survival_data=read.csv("jontCD_1.csv",header=T)
+survival_data=survival_data[,-c(1,14)]
+full_data=cbind(complete_data,survival_data)
+write.csv(full_data,"full_data.csv")
+
+rantes=subset(full_data,select=c("id","patient_id","time","RANTES","Sampling_Date","t_stage","n_stage","inclusion_date","date_of_local_relapse","date_of_metastatic_disease","censoring_date","trg_score"))
+rantes=read.csv("rantes_new.csv",header = T)
+#rantes=rantes[rantes$patient_id != "93",]
+
+rantes$date_of_local_relapse =as.Date.factor(rantes$date_of_local_relapse,"%d-%m-%y")
+rantes$date_of_metastatic_disease=as.Date.factor(rantes$date_of_metastatic_disease,"%d-%m-%y")
+rantes$Sampling_Date =as.Date.factor(rantes$Sampling_Date,"%d-%m-%y")
+rantes$inclusion_date =as.Date.factor(rantes$inclusion_date,"%d-%m-%y")
+rantes$censoring_date =as.Date.factor(rantes$censoring_date,"%d-%m-%y")
+
+event_time=as.Date.character(c(),format = "%d-%m-%y")
+for (i in 1:length(rantes$patient_id))
+{
+  if (is.na(rantes$date_of_local_relapse[i])==TRUE && is.na(rantes$date_of_metastatic_disease[i])==FALSE)
+  {
+    event_time[i]=rantes$date_of_metastatic_disease[i]
+  }else if(is.na(rantes$date_of_local_relapse[i])==FALSE && is.na(rantes$date_of_metastatic_disease[i])==TRUE)
+  {
+    event_time[i]=rantes$date_of_local_relapse[i]
+  }else if (is.na(rantes$date_of_local_relapse[i])==TRUE && is.na(rantes$date_of_metastatic_disease[i])==TRUE)
+  {
+    event_time[i]=rantes$censoring_date[i]
+  }else
+  {
+    event_time[i]=min(rantes$date_of_local_relapse[i],rantes$date_of_metastatic_disease[i])
+  }
+}
+rantes=cbind(rantes,event_time)
+sur_duration=rantes$event_time-rantes$inclusion_date
+# a=unique(rantes$patient_id)
+# pid=c()
+# for(i in 1:a)
+# {
+#   rantes_pid=rantes[rantes$patient_id==a[i],]
+#   if(max(rantes_pid$Sampling_Date)<max(rantes_id$event_time))
+#   {
+#     pid=c(pid,i)
+#   }
+# }
+
+days=rantes$Sampling_Date-rantes$inclusion_date
+event=as.numeric(rantes$event_time!=rantes$censoring_date)
+rantes$t_stage=as.factor(rantes$t_stage)
+rantes$n_stage=as.factor(rantes$n_stage)
+rantes$trg_score=as.factor(rantes$trg_score)
+rantes1=cbind(rantes,sur_duration,event,days)
+r=unique(rantes1[rantes1$days<0,]$patient_id)
+rantes1=rantes1[!(rantes1$patient_id %in% r),]
+write.csv(rantes1,"rantes.csv")
+
+xyplot(log(RANTES)~ time|event, group = patient_id, data = rantes,
+       xlab = "obstime", ylab = "RANTES", col = 1, type = "l")
+
+plot(survfit(Surv(days, event) ~ t_stage, data = rantes), conf.int = FALSE,
+     mark.time = TRUE,ylim=c(0.95,1),col = c("black", "blue"), 
+     lty = 1:2,ylab = "Survival", xlab = "Days")
+
+rantes1=rantes1[rantes1$sur_duration >= rantes1$days, ]
+which(is.na(rantes1$RANTES))
+NArecord<-rantes1[is.na(rantes1$RANTES)==1,]
+r<-unique(NArecord$patient_id)
+rantes2<-rantes1[!(rantes1$patient_id %in% r),]
+
+which(is.na(rantes2$trg_score))
+NArecord<-rantes2[is.na(rantes2$trg_score)==1,]
+s<-unique(NArecord$patient_id)
+rantes2<-rantes2[!(rantes2$patient_id %in% s),]
+
+# which(is.na(rantes1$trg_score))
+# NArecord<-rantes1[is.na(rantes1$trg_score)==1,]
+# s<-unique(NArecord$patient_id)
+# rantes3<-rantes1[!(rantes1$patient_id %in% s),]
+# write.csv(rantes3,"rantes3.csv")
+
+rantes_surv<-rantes2[!duplicated(rantes2$patient_id), ]
+
+fitlme<-lme(log(RANTES)~I(days/365)+t_stage+n_stage+trg_score,random = ~ 1|patient_id,data=rantes2)
+fitsurv<-coxph(Surv(sur_duration,event)~t_stage+n_stage,data=rantes_surv,x=TRUE)
+fit.JMa0 <- jointModelBayes(fitlme, fitsurv, timeVar = "days",param="td-value")
+fit.JMa00 <- jointModel(fitlme, fitsurv, timeVar = "days",method = "Cox-PH-GH",verbose=T,control = list(iter.EM=1000))
+summary(fit.JMa0)
+summary(fit.JMa00)
+
+fitlme1<-lme(RANTES~I(days/365)+n_stage+trg_score,random = ~ 1|patient_id,data=rantes2)
+fitlme2<-lme(RANTES~I(days/365)+t_stage+trg_score,random = ~ 1|patient_id,data=rantes2)
+fitlme3<-lme(RANTES~I(days/365)+t_stage+n_stage,random = ~ 1|patient_id,data=rantes2)
+fit.JMa3 <- jointModel(fitlme1, fitsurv, timeVar = "days",method = "piecewise-PH-aGH",verbose=T)
+fit.JMa4 <- jointModel(fitlme2, fitsurv, timeVar = "days",method = "piecewise-PH-aGH",verbose=T)
+fit.JMa5 <- jointModel(fitlme3, fitsurv, timeVar = "days",method = "piecewise-PH-aGH",verbose=T)
+
+# joint_model=function(z){
+#   fitlme<-lme(RANTES~I(days/365)+t_stage+n_stage+trg_score,random = ~1|patient_id,data=z)
+#   fitsurv<-coxph(Surv(sur_duration,event)~t_stage+n_stage,data=rantes_surv,x=TRUE)
+#   fit.JMa <- jointModel(fitlme, fitsurv, timeVar = "days",method = "piecewise-PH-aGH",verbose=T)
+#   return(fit.JMa)
+# }
+
+library("geepack")
+geepcr<-geeglm(RANTES~I(days/365)+t_stage+n_stage+trg_score,id=patient_id,data=rantes2,family=gaussian,corstr="ind")
+geepcr1<-geeglm(RANTES~I(days/365)+t_stage+n_stage+trg_score,id=patient_id,data=rantes2,family=gaussian,corstr="unstructured")
+
+### Missing data Analysis using mice ##########
+
+library("mice")
+rantes_mice=subset(rantes1,select=-c(Sampling_Date,inclusion_date,date_of_local_relapse,date_of_metastatic_disease,censoring_date,event_time))
+ini <- mice(rantes_mice, maxit = 0)
+meth <- ini$meth
+meth["trg_score"]="polr"
+pred<-ini$pred
+#rantes1$days=as.numeric(rantes1$days)
+#pred[,c("X","id","Sampling_Date","inclusion_date","date_of_local_relapse","date_of_metastatic_disease","censoring_date","event_time","sur_duration")]<-0
+# this command helps in deciding which variables will not enter the imputation model
+
+meth["RANTES"]="pmm"
+imp1<-mice(rantes_mice,m=5,pred=pred,meth=meth,print=FALSE,maxit=50,seed=1233)
+#imp1<-mice(rantes_mice,m=5,meth='pmm',print=FALSE,maxit=500)
+# using 'pmm' methods for imputation. For 'cart', 'norm', it will change accordingly.
+
+meth["RANTES"]="cart"
+imp2<-mice(rantes_mice,m=5,pred=pred,meth=meth,print=FALSE,maxit=50,seed=246)
+#imp2<-mice(rantes_mice,m=5,meth='cart',print=FALSE,maxit = 500)
+
+meth["RANTES"]="norm"
+imp3<-mice(rantes_mice,m=5,pred=pred,meth=meth,print=FALSE,maxit=50,seed=9582)
+#imp3<-mice(rantes_mice,m=5,meth='norm',print=FALSE,maxit=500)
+
+### pmm ###
+r1<-complete(imp1,1)
+
+rantes_imp_surv1<-r1[!duplicated(r1$patient_id), ]
+fitlme1<-lme(log(RANTES)~I(days/365)+t_stage+n_stage+trg_score,random = ~1|patient_id,data=r1)
+fitsurv1<-coxph(Surv(sur_duration,event)~t_stage+n_stage,data=rantes_imp_surv1,x=TRUE)
+fit.JMa1 <- jointModelBayes(fitlme1, fitsurv1, timeVar = "days",param="td-value")
+fit.JMa11 <- jointModel(fitlme1, fitsurv1, timeVar = "days",method = "Cox-PH-GH",verbose=T,control = list(iter.EM=1000))
+summary(fit.JMa1)
+summary(fit.JMa11)
+
+### cart ###
+r2<-complete(imp2,5)
+
+rantes_imp_surv2<-r2[!duplicated(r2$patient_id), ]
+fitlme2<-lme(log(RANTES)~I(days/365)+t_stage+n_stage+trg_score,random = ~1|patient_id,data=r2)
+fitsurv2<-coxph(Surv(sur_duration,event)~t_stage+n_stage,data=rantes_imp_surv2,x=TRUE)
+fit.JMa2 <- jointModelBayes(fitlme2, fitsurv2, timeVar = "days",param="td-value")
+fit.JMa22 <- jointModel(fitlme2, fitsurv2, timeVar = "days",method = "Cox-PH-GH",verbose=T)
+summary(fit.JMa2)
+summary(fit.JMa22)
+
+### norm ###
+r3<-complete(imp3,5)
+
+rantes_imp_surv3<-r3[!duplicated(r3$patient_id), ]
+fitlme3<-lme(log(RANTES)~I(days/365)+t_stage+n_stage+trg_score,random = ~1|patient_id,data=r3)
+fitsurv3<-coxph(Surv(sur_duration,event)~t_stage+n_stage,data=rantes_imp_surv3,x=TRUE)
+fit.JMa3 <- jointModelBayes(fitlme3, fitsurv3, timeVar = "days",param="td-value")
+fit.JMa33 <- jointModel(fitlme3, fitsurv3, timeVar = "days",method = "Cox-PH-GH",verbose=T)
+summary(fit.JMa3)
+summary(fit.JMa33)
+
+### Amelia ###
+r4<-read.csv("rantes_mice-imp2.csv",header=T)
+r4$t_stage=as.factor(r4$t_stage)
+r4$n_stage=as.factor(r4$n_stage)
+r4$trg_score=as.factor(r4$trg_score)
+rantes_imp_surv4<-r4[!duplicated(r4$patient_id), ]
+fitlme4<-lme(log(RANTES)~I(days/365)+t_stage+n_stage+trg_score,random = ~1|patient_id,data=r4)
+fitsurv4<-coxph(Surv(sur_duration,event)~t_stage+n_stage,data=rantes_imp_surv4,x=TRUE)
+fit.JMa4 <- jointModelBayes(fitlme4, fitsurv4, timeVar = "days",param="td-value")
+fit.JMa44 <- jointModel(fitlme4, fitsurv4, timeVar = "days",method = "Cox-PH-GH",verbose=T,control = list(iter.EM=1000))
+summary(fit.JMa4)
+summary(fit.JMa44)
+
+dat1<-rantes_mice[rantes_mice$trg_score==" NA",]
+dat1_surv<-dat1[!duplicated(dat1$patient_id), ]
+
+### Paired Panel Plot ####
+
+library("psych")
+library("mi")
+missdata1<-subset(rantes2,select=-c(X,id,patient_id,Sampling_Date,inclusion_date,date_of_local_relapse,date_of_metastatic_disease,censoring_date,event_time))
+Missingness <- ifelse (is.na (missdata1) == TRUE, 0, 1)
+MissData <- data.frame(missdata1, Missingness)
+pairs.panels (MissData, ellipses = FALSE, method = "spearman")
+
