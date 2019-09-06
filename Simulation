@@ -1,0 +1,358 @@
+Simulate <- function(n) {
+  
+  # Try to simulate the data based on this
+  n <- n# number of subjects # n should be multiple of 4
+  K <- 4  # number of planned repeated measurements per subject, per outcome
+  #t.max<-4
+  ################################################
+  
+  # parameters for the linear mixed effects model
+  betas <- c("(Intercept)"=5,"Times"=0.3,"t_stage1" = 0.7, "t_stage2"=0.5,"t_stage3"=0.1,
+             "n_stage1"=0.2)
+  
+  sigma.y <- 1 # measurement error standard deviation
+  
+  # parameters for the survival model
+  gammas <- c("(Intercept)" = -5, "t_stage1" = 1,"t_stage2"=1.8,"t_stage3"=2) # coefficients for baseline covariates 
+  alpha <- 1 # association parameter 
+  phi <- 5 # shape for the Weibull baseline hazard 
+  mean.Cens <- 2 # mean of the exponential distribution for the censoring mechanism 
+  
+  D <- 0.81 #random effect variance
+  ################################################
+  
+  #Bkn <- c(0.5, t.max + 0.5)
+  #kn <- c(mean.Cens)
+  
+  # design matrices for the longitudinal measurement model
+  # but this can be easily generalized
+  # time1<-rpois(n,0.7)
+  # time2<-round(rnorm(n,30,5))
+  # time3<-round(rnorm(n,60,8))
+  # time4<-round(rnorm(n,90,10))
+  
+  #times <- c(replicate(n, c(0, sort(runif(K-1, 0, t.max)))))
+  times<-(c(replicate(n,sort(c(rpois(1,0.7),round(rnorm(1,30,5)),round(rnorm(1,60,5)),round(rnorm(1,90,5))))))/365)
+  t_stage<-rep(0:3,each=n/4)
+  n_stage<-rep(0:1,each=n/2)
+  #group <- rep(0:1, each = n/2) # group indicator, i.e., '0' placebo, '1' active treatment
+  DF <- data.frame(obstime = times, t_stage = factor(rep(t_stage, each = K)),n_stage = factor(rep(n_stage, K)))
+  X <- model.matrix(~ obstime+t_stage+n_stage , data = DF)
+  Z <- model.matrix(~  1, data = DF) 
+  
+  # design matrix for the survival model
+  DF1=data.frame(t_stage=factor(rep(t_stage, each = 1)))
+  W <- model.matrix(~ t_stage , data = DF1)
+  #W <- cbind("(Intercept)" = 1, "t_stage" = t_stage)
+  
+  ################################################
+  
+  #simulate random effects
+  b <- mvrnorm(n, 0, D)
+  
+  # simulate longitudinal responses
+  id <- rep(1:n, each = K)
+  eta.y <- as.vector(X %*% betas + rowSums(Z * b[id, ])) # linear predictor
+  y <- rnorm(n * K, eta.y, sigma.y)
+  
+  # simulate event times
+  eta.t <- as.vector(W %*% gammas)
+  invS <- function (t, u, i) {
+    h <- function (s) {
+      t_stage0 <- 3 - t_stage[i]
+      t_stage1 <- 2-t_stage[i]
+      t_stage2 <- 1-t_stage[i]
+      t_stage3 <- t_stage[i]
+      n_stage0 <- 1-n_stage[i]
+      n_stage1 <- n_stage[i]
+      XX <- cbind(1,s,t_stage1,t_stage2,t_stage3,n_stage1)
+      ZZ <- cbind(1)
+      f1 <- as.vector(XX %*% betas + rowSums(ZZ * b[rep(i, nrow(ZZ)), ]))
+      exp(log(phi) + (phi - 1) * log(s) + eta.t[i] + f1 * alpha)
+    }
+    integrate(h, lower = 0, upper = t)$value + log(u)
+  }
+  u <- runif(n)
+  trueTimes <- numeric(n)
+  for (i in 1:n) {
+    Up <- 50
+    tries <- 20
+    Root <- try(uniroot(invS, interval = c(1e-05, Up), u = u[i], i = i)$root, TRUE)
+    while(inherits(Root, "try-error") && tries > 0) {
+      tries <- tries - 1
+      Up <- Up + 200
+      Root <- try(uniroot(invS, interval = c(1e-05, Up), u = u[i], i = i)$root, TRUE)
+    }
+    trueTimes[i] <- if (!inherits(Root, "try-error")) Root else NA
+  }
+  na.ind <- !is.na(trueTimes)
+  trueTimes <- trueTimes[na.ind]
+  W <- W[na.ind,  ,drop = FALSE]
+  long.na.ind <- rep(na.ind, each = K)
+  y <- y[long.na.ind]
+  X <- X[long.na.ind, drop = FALSE]
+  Z <- Z[long.na.ind, drop = FALSE]
+  DF <- DF[long.na.ind, ]
+  n <- length(trueTimes)
+  
+  # simulate censoring times from an exponential distribution,
+  # and calculate the observed event times, i.e., min(true event times, censoring times)
+  Ctimes <- rexp(n, mean.Cens)
+  Time <- pmin(trueTimes, Ctimes)
+  event <- as.numeric(trueTimes <= Ctimes) # event indicator
+  
+  ################################################
+  
+  # keep the nonmissing cases, i.e., drop the longitudinal measurements
+  # that were taken after the observed event time for each subject.
+  ind <- times[long.na.ind] <= rep(Time, each = K)
+  y <- y[ind]
+  X <- X[ind, drop = FALSE]
+  Z <- Z[ind, drop = FALSE]
+  id <- id[long.na.ind][ind]
+  id <- match(id, unique(id))
+  id.id <- unique(id)
+  
+  dat <- DF[ind, ]
+  dat$id <- id
+  dat$y <- y
+  dat$Time <- Time[id]
+  dat$event <- event[id]
+  dat.id <- data.frame(id = id.id, Time = Time, event = event, t_stage = W[,2:4])
+  names(dat) <- c("obstime", "t_stage", "n_stage","id", "y", "Time", "event")
+  
+  return(dat)
+}
+
+write.csv(simdata,"simdata_new.csv")
+#simdata<-read.csv("simudata_new.csv",header=T)
+simdata=Simulate(80)
+#######
+
+d=dim(simdata)[1]
+miss_ind=sample(c(rep(1,round(0.3*d)),rep(0,round((1-0.3)*d))))
+miss_cov=sample(c(rep(1,round(0.2*d)),rep(0,round((1-0.2)*d))))
+ 
+simdata1=cbind(simdata,miss_ind)#,miss_cov)
+simdata1$t_stage=as.factor(simdata1$t_stage)
+simdata1$n_stage=as.factor(simdata1$n_stage)
+
+for(i in 1:dim(simdata1)[1])
+{
+  if(simdata1$miss_ind[i]==1)
+  {
+    simdata1$y[i]= NA
+  }
+  #if(simdata1$miss_cov[i]==1)
+  #{
+  #  simdata1$t_stage[i]= NA
+  #}
+}
+
+#### Joint Model Fit ######
+which(is.na(simdata1$y))
+NArecord<-simdata1[is.na(simdata1$y)==1,]
+r<-unique(NArecord$id)
+simdata2<-simdata1[!(simdata1$id %in% r),]
+
+simdata_surv<-simdata2[!duplicated(simdata2$id), ]  
+
+fitlme<-lme(y~obstime+t_stage+n_stage,random = ~ 1|id,data=simdata2)
+fitsurv<-coxph(Surv(Time,event)~t_stage,data=simdata_surv,x=TRUE)
+sim.JMa0 <- jointModelBayes(fitlme, fitsurv, timeVar = "obstime",param="td-value")
+sim.JMa00 <- jointModel(fitlme, fitsurv, timeVar = "obstime",method = "Cox-PH-GH",verbose=T,control = list(iter.EM=100))
+sim.JMa000 <- jointModel(fitlme, fitsurv, timeVar = "obstime",method = "weibull-PH-aGH",verbose=T,control = list(iter.EM=1000))
+
+
+simsurv<-simdata[!duplicated(simdata$id), ]
+fitlme<-lme(y~obstime+t_stage+n_stage,random = ~ 1|id,data=simdata)
+fitsurv<-coxph(Surv(Time,event)~t_stage,data=simsurv,x=TRUE)
+sim.fullJM0 <- jointModel(fitlme, fitsurv, timeVar = "obstime",method = "weibull-PH-GH",verbose=T,control = list(iter.EM=100))
+sim.JMaBayes<-jointModelBayes(fitlme, fitsurv, timeVar = "obstime",param="td-value")
+sim.fullJM00 <- jointModel(fitlme, fitsurv, timeVar = "obstime",method = "Cox-PH-GH",verbose=T)
+
+summary(sim.JMa0)
+
+### Imputation ######
+
+library("mice")
+sim_mice=subset(simdata1,select=-c(miss_ind))
+ini <- mice(sim_mice, maxit = 0)
+meth <- ini$meth
+pred<-ini$pred
+#rantes1$days=as.numeric(rantes1$days)
+#pred[,c("X","id","Sampling_Date","inclusion_date","date_of_local_relapse","date_of_metastatic_disease","censoring_date","event_time","sur_duration")]<-0
+# this command helps in deciding which variables will not enter the imputation model
+
+meth["y"]="pmm"
+imp1<-mice(sim_mice,m=5,pred=pred,meth=meth,print=FALSE,maxit=500,seed=123)
+#imp1<-mice(rantes_mice,m=5,meth='pmm',print=FALSE,maxit=500)
+# using 'pmm' methods for imputation. For 'cart', 'norm', it will change accordingly.
+
+meth["y"]="cart"
+imp2<-mice(sim_mice,m=5,pred=pred,meth=meth,print=FALSE,maxit=500,seed=246)
+#imp2<-mice(rantes_mice,m=5,meth='cart',print=FALSE,maxit = 500)
+
+meth["y"]="norm"
+imp3<-mice(sim_mice,m=5,pred=pred,meth=meth,print=FALSE,maxit=500)
+#imp3<-mice(rantes_mice,m=5,meth='norm',print=FALSE,maxit=500)
+
+### pmm ###
+r1<-complete(imp1,5)
+
+sim_imp_surv1<-r1[!duplicated(r1$id), ]
+simlme1<-lme(y~obstime+t_stage+n_stage,random = ~1|id,data=r1)
+simsurv1<-coxph(Surv(Time,event)~t_stage,data=sim_imp_surv1,x=TRUE)
+sim.JMa1 <- jointModelBayes(simlme1, simsurv1, timeVar = "obstime",param="td-value")
+sim.JMa11 <- jointModel(simlme1, simsurv1, timeVar = "obstime",method = "weibull-PH-GH",verbose=T,control = list(iter.EM=1000))
+sim.JMa111 <- jointModel(simlme1, simsurv1, timeVar = "obstime",method = "weibull-PH-aGH",verbose=T,control = list(iter.EM=1000))
+summary(sim.JMa1)
+summary(sim.JMa11)
+summary(sim.JMa111)
+
+### cart ###
+r2<-complete(imp2,5)
+
+sim_imp_surv2<-r2[!duplicated(r2$id), ]
+simlme2<-lme(y~obstime+t_stage+n_stage,random = ~1|id,data=r2)
+simsurv2<-coxph(Surv(Time,event)~t_stage,data=sim_imp_surv2,x=TRUE)
+sim.JMa2 <- jointModelBayes(simlme2, simsurv2, timeVar = "obstime",param="td-value")
+sim.JMa22 <- jointModel(simlme2, simsurv2, timeVar = "obstime",method = "weibull-PH-GH",verbose=T,control = list(iter.EM=10000))
+sim.JMa222 <- jointModel(simlme2, simsurv2, timeVar = "obstime",method = "weibull-PH-aGH",verbose=T,control = list(iter.EM=10000))
+summary(sim.JMa2)
+summary(sim.JMa22)
+summary(sim.JMa222)
+
+### norm ###
+r3<-complete(imp3,1)
+
+sim_imp_surv3<-r3[!duplicated(r3$id), ]
+simlme3<-lme(y~obstime+t_stage+n_stage,random = ~1|id,data=r3)
+simsurv3<-coxph(Surv(Time,event)~t_stage,data=sim_imp_surv3,x=TRUE)
+sim.JMa3 <- jointModelBayes(simlme3, simsurv3, timeVar = "obstime",param="td-value")
+sim.JMa33 <- jointModel(simlme3, simsurv3, timeVar = "obstime",method = "weibull-PH-GH",verbose=T,control = list(iter.EM=1000))
+sim.JMa333 <- jointModel(simlme3, simsurv3, timeVar = "obstime",method = "weibull-PH-aGH",verbose=T,control = list(iter.EM=1000))
+summary(sim.JMa3)
+summary(sim.JMa33)
+summary(sim.JMa333)
+
+### Amelia #####
+
+r4<-read.csv("sim-imp5.csv",header=T)
+r4$t_stage=as.factor(r4$t_stage)
+r4$n_stage=as.factor(r4$n_stage)
+sim_imp_surv4<-r4[!duplicated(r4$id), ]
+simlme4<-lme(y~obstime+t_stage+n_stage,random = ~1|id,data=r4)
+simsurv4<-coxph(Surv(Time,event)~t_stage,data=sim_imp_surv4,x=TRUE)
+sim.JMa4 <- jointModelBayes(simlme4, simsurv4, timeVar = "obstime",param="td-value")
+sim.JMa44 <- jointModel(simlme4, simsurv4, timeVar = "obstime",method = "weibull-PH-GH",verbose=T)
+sim.JMa444 <- jointModel(simlme4, simsurv4, timeVar = "obstime",method = "weibull-PH-aGH",verbose=T)
+summary(sim.JMa4)
+summary(sim.JMa44)
+summary(sim.JMa444)
+
+#########################################
+scovdata<-cbind(simdata1,miss_cov)
+for(i in 1:dim(scovdata)[1])
+{
+  if(scovdata$miss_cov[i]==1)
+  {
+  scovdata$t_stage[i]= NA
+  }
+}
+scovdata$t_stage=as.factor(scovdata$t_stage)
+scovdata$n_stage=as.factor(scovdata$n_stage)
+
+which(is.na(scovdata$y) | is.na(scovdata$t_stage))
+NArecord<-scovdata[is.na(scovdata$y)==1 | is.na(scovdata$t_stage)==1,]
+r<-unique(NArecord$id)
+scovdata1<-scovdata[!(scovdata$id %in% r),]
+
+scovdata_surv<-scovdata1[!duplicated(scovdata1$id), ]  
+
+fitlme<-lme(y~obstime+t_stage+n_stage,random = ~ 1|id,data=scovdata1)
+fitsurv<-coxph(Surv(Time,event)~t_stage,data=scovdata_surv,x=TRUE,coxph.control(iter.max = 200))
+scov.JMa0 <- jointModelBayes(fitlme, fitsurv, timeVar = "obstime",param="td-value")
+#sim.JMa00 <- jointModel(fitlme, fitsurv, timeVar = "obstime",method = "Cox-PH-GH",verbose=T,control = list(iter.EM=1000))
+scov.JMa00 <- jointModel(fitlme, fitsurv, timeVar = "obstime",method = "weibull-PH-aGH",verbose=T,control = list(iter.EM=1000))
+
+### Imputation #############
+
+library("mice")
+scov_mice=subset(scovdata,select=-c(miss_ind,miss_cov))
+ini <- mice(scov_mice, maxit = 0)
+meth <- ini$meth
+pred<-ini$pred
+#rantes1$days=as.numeric(rantes1$days)
+#pred[,c("X","id","Sampling_Date","inclusion_date","date_of_local_relapse","date_of_metastatic_disease","censoring_date","event_time","sur_duration")]<-0
+# this command helps in deciding which variables will not enter the imputation model
+
+meth["y"]="pmm"
+meth["t_stage"]="polr"
+scov_imp1<-mice(scov_mice,m=5,pred=pred,meth=meth,print=FALSE,maxit=500,seed=123)
+#imp1<-mice(rantes_mice,m=5,meth='pmm',print=FALSE,maxit=500)
+# using 'pmm' methods for imputation. For 'cart', 'norm', it will change accordingly.
+
+meth["y"]="cart"
+meth["t_stage"]="polr"
+scov_imp2<-mice(scov_mice,m=5,pred=pred,meth=meth,print=FALSE,maxit=500,seed=2464)
+#imp2<-mice(rantes_mice,m=5,meth='cart',print=FALSE,maxit = 500)
+
+meth["y"]="norm"
+meth["t_stage"]="polr"
+scov_imp3<-mice(scov_mice,m=5,pred=pred,meth=meth,print=FALSE,maxit=50,seed=135)
+#imp3<-mice(rantes_mice,m=5,meth='norm',print=FALSE,maxit=500)
+
+### pmm ###
+r1<-complete(scov_imp1,5)
+
+scov_imp_surv1<-r1[!duplicated(r1$id), ]
+scovlme1<-lme(y~obstime+t_stage+n_stage,random = ~1|id,data=r1)
+scovsurv1<-coxph(Surv(Time,event)~t_stage,data=scov_imp_surv1,x=TRUE)
+scov.JMa1 <- jointModelBayes(scovlme1, scovsurv1, timeVar = "obstime",param="td-value")
+scov.JMa11 <- jointModel(scovlme1, scovsurv1, timeVar = "obstime",method = "weibull-PH-GH",verbose=T,control = list(iter.EM=1000))
+scov.JMa111 <- jointModel(scovlme1, scovsurv1, timeVar = "obstime",method = "weibull-PH-aGH",verbose=T,control = list(iter.EM=1000))
+summary(scov.JMa1)
+summary(scov.JMa11)
+summary(scov.JMa111)
+
+### cart ###
+r2<-complete(scov_imp2,5)
+
+scov_imp_surv2<-r2[!duplicated(r2$id), ]
+scovlme2<-lme(y~obstime+t_stage+n_stage,random = ~1|id,data=r2)
+scovsurv2<-coxph(Surv(Time,event)~t_stage,data=scov_imp_surv2,x=TRUE)
+scov.JMa2 <- jointModelBayes(scovlme2, scovsurv2, timeVar = "obstime",param="td-value")
+scov.JMa22 <- jointModel(scovlme2, scovsurv2, timeVar = "obstime",method = "weibull-PH-GH",verbose=T,control = list(iter.EM=10000))
+scov.JMa222 <- jointModel(scovlme2, scovsurv2, timeVar = "obstime",method = "weibull-PH-aGH",verbose=T,control = list(iter.EM=10000))
+summary(scov.JMa2)
+summary(scov.JMa22)
+summary(scov.JMa222)
+
+### norm ###
+r3<-complete(scov_imp3,5)
+
+scov_imp_surv3<-r3[!duplicated(r3$id), ]
+scovlme3<-lme(y~obstime+t_stage+n_stage,random = ~1|id,data=r3)
+scovsurv3<-coxph(Surv(Time,event)~t_stage,data=scov_imp_surv3,x=TRUE)
+scov.JMa3 <- jointModelBayes(scovlme3, scovsurv3, timeVar = "obstime",param="td-value")
+scov.JMa33 <- jointModel(scovlme3, scovsurv3, timeVar = "obstime",method = "weibull-PH-GH",verbose=T,control = list(iter.EM=10000))
+scov.JMa333 <- jointModel(scovlme3, scovsurv3, timeVar = "obstime",method = "weibull-PH-aGH",verbose=T,control = list(iter.EM=10000))
+summary(scov.JMa3)
+summary(scov.JMa33)
+summary(scov.JMa333)
+
+### Amelia #####
+
+r4<-read.csv("scov_mice-imp5.csv",header=T)
+r4$t_stage=as.factor(r4$t_stage)
+r4$n_stage=as.factor(r4$n_stage)
+scov_imp_surv4<-r4[!duplicated(r4$id), ]
+scovlme4<-lme(y~obstime+t_stage+n_stage,random = ~1|id,data=r4)
+scovsurv4<-coxph(Surv(Time,event)~t_stage,data=scov_imp_surv4,x=TRUE)
+scov.JMa4 <- jointModelBayes(scovlme4, scovsurv4, timeVar = "obstime",param="td-value")
+scov.JMa44 <- jointModel(scovlme4, scovsurv4, timeVar = "obstime",method = "weibull-PH-GH",verbose=T,control = list(iter.EM=10000))
+scov.JMa444 <- jointModel(scovlme4, scovsurv4, timeVar = "obstime",method = "weibull-PH-aGH",verbose=T,control = list(iter.EM=10000))
+summary(scov.JMa4)
+summary(scov.JMa44)
+summary(scov.JMa444)
