@@ -2,8 +2,7 @@ Simulate <- function(n) {
   
   # Try to simulate the data based on this
   n <- n# number of subjects # n should be multiple of 4
-  K <- 4  # number of planned repeated measurements per subject, per outcome
-  #t.max<-4
+  K <- 4  # number of repeated measurements per subject, per outcome
   ################################################
   
   # parameters for the linear mixed effects model
@@ -17,25 +16,12 @@ Simulate <- function(n) {
   alpha <- 1 # association parameter 
   phi <- 5 # shape for the Weibull baseline hazard 
   mean.Cens <- 2 # mean of the exponential distribution for the censoring mechanism 
-  
   D <- 0.81 #random effect variance
   ################################################
   
-  #Bkn <- c(0.5, t.max + 0.5)
-  #kn <- c(mean.Cens)
-  
-  # design matrices for the longitudinal measurement model
-  # but this can be easily generalized
-  # time1<-rpois(n,0.7)
-  # time2<-round(rnorm(n,30,5))
-  # time3<-round(rnorm(n,60,8))
-  # time4<-round(rnorm(n,90,10))
-  
-  #times <- c(replicate(n, c(0, sort(runif(K-1, 0, t.max)))))
   times<-(c(replicate(n,sort(c(rpois(1,0.7),round(rnorm(1,30,5)),round(rnorm(1,60,5)),round(rnorm(1,90,5))))))/365)
   t_stage<-rep(0:3,each=n/4)
   n_stage<-rep(0:1,each=n/2)
-  #group <- rep(0:1, each = n/2) # group indicator, i.e., '0' placebo, '1' active treatment
   DF <- data.frame(obstime = times, t_stage = factor(rep(t_stage, each = K)),n_stage = factor(rep(n_stage, K)))
   X <- model.matrix(~ obstime+t_stage+n_stage , data = DF)
   Z <- model.matrix(~  1, data = DF) 
@@ -43,8 +29,6 @@ Simulate <- function(n) {
   # design matrix for the survival model
   DF1=data.frame(t_stage=factor(rep(t_stage, each = 1)))
   W <- model.matrix(~ t_stage , data = DF1)
-  #W <- cbind("(Intercept)" = 1, "t_stage" = t_stage)
-  
   ################################################
   
   #simulate random effects
@@ -100,7 +84,6 @@ Simulate <- function(n) {
   Ctimes <- rexp(n, mean.Cens)
   Time <- pmin(trueTimes, Ctimes)
   event <- as.numeric(trueTimes <= Ctimes) # event indicator
-  
   ################################################
   
   # keep the nonmissing cases, i.e., drop the longitudinal measurements
@@ -127,7 +110,7 @@ Simulate <- function(n) {
 write.csv(simdata,"simdata_new.csv")
 #simdata<-read.csv("simudata_new.csv",header=T)
 simdata=Simulate(80)
-#######
+#########################################################
 
 d=dim(simdata)[1]
 miss_ind=sample(c(rep(1,round(0.3*d)),rep(0,round((1-0.3)*d))))
@@ -137,24 +120,29 @@ simdata1=cbind(simdata,miss_ind)#,miss_cov)
 simdata1$t_stage=as.factor(simdata1$t_stage)
 simdata1$n_stage=as.factor(simdata1$n_stage)
 
+
+# missing data indicator 
+
 for(i in 1:dim(simdata1)[1])
 {
   if(simdata1$miss_ind[i]==1)
   {
     simdata1$y[i]= NA
   }
-  #if(simdata1$miss_cov[i]==1)
-  #{
-  #  simdata1$t_stage[i]= NA
-  #}
+  if(simdata1$miss_cov[i]==1)
+  {
+    simdata1$t_stage[i]= NA
+  }
 }
+###########################
+#### Joint Model Fit ####
 
-#### Joint Model Fit ######
 which(is.na(simdata1$y))
 NArecord<-simdata1[is.na(simdata1$y)==1,]
 r<-unique(NArecord$id)
 simdata2<-simdata1[!(simdata1$id %in% r),]
 
+# survival object 
 simdata_surv<-simdata2[!duplicated(simdata2$id), ]  
 
 fitlme<-lme(y~obstime+t_stage+n_stage,random = ~ 1|id,data=simdata2)
@@ -180,8 +168,7 @@ sim_mice=subset(simdata1,select=-c(miss_ind))
 ini <- mice(sim_mice, maxit = 0)
 meth <- ini$meth
 pred<-ini$pred
-#rantes1$days=as.numeric(rantes1$days)
-#pred[,c("X","id","Sampling_Date","inclusion_date","date_of_local_relapse","date_of_metastatic_disease","censoring_date","event_time","sur_duration")]<-0
+
 # this command helps in deciding which variables will not enter the imputation model
 
 meth["y"]="pmm"
