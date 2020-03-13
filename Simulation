@@ -113,15 +113,31 @@ simdata=Simulate(80)
 #########################################################
 
 d=dim(simdata)[1]
-miss_ind=sample(c(rep(1,round(0.3*d)),rep(0,round((1-0.3)*d))))
-miss_cov=sample(c(rep(1,round(0.2*d)),rep(0,round((1-0.2)*d))))
- 
-simdata1=cbind(simdata,miss_ind)#,miss_cov)
+miss_cov1=sample(c(rep(1,round(0.2*d)),rep(0,round((1-0.2)*d))))
+miss_cov2=sample(c(rep(1,round(0.2*d)),rep(0,round((1-0.2)*d))))
+
+miss_ind=c()
+for(i in 1:dim(simdata)[1])
+{
+  if(simdata$t_stage[i]==2 && simdata$t_stage[i]==3 || simdata$n_stage[i]==1)
+  {
+    miss_ind[i]= rbinom(1,1,0.7)
+  }else if(simdata$t_stage[i]==2 && simdata$t_stage[i]==3 || simdata$n_stage[i]==0)
+  {
+    miss_ind[i]= rbinom(1,1,0.5) 
+  }else if(simdata$t_stage[i]==0 && simdata$t_stage[i]==1 || simdata$n_stage[i]==1)
+  {
+    miss_ind[i]= rbinom(1,1,0.3)
+  }else
+  {
+    miss_ind[i]=rbinom(1,1,0.1)
+  }
+}
+simdata1=cbind(simdata,miss_ind,miss_cov1,miss_cov2)
 simdata1$t_stage=as.factor(simdata1$t_stage)
 simdata1$n_stage=as.factor(simdata1$n_stage)
 
-
-# missing data indicator 
+## missing data indicator ###
 
 for(i in 1:dim(simdata1)[1])
 {
@@ -129,11 +145,16 @@ for(i in 1:dim(simdata1)[1])
   {
     simdata1$y[i]= NA
   }
-  if(simdata1$miss_cov[i]==1)
+  if(simdata1$miss_cov1[i]==1)
   {
     simdata1$t_stage[i]= NA
   }
+  if(simdata1$miss_cov2[i]==1)
+  {
+    simdata1$n_stage[i]= NA
+  }
 }
+
 ###########################
 #### Joint Model Fit ####
 
