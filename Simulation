@@ -154,6 +154,7 @@ for(i in 1:dim(simdata1)[1])
     simdata1$n_stage[i]= NA
   }
 }
+# for response missingness only, the 'miss_cov' part will be omitted. 
 
 ###########################
 #### Joint Model Fit ####
